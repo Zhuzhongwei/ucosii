@@ -1,0 +1,658 @@
+0.初始化"uC/OS-II"内核
+OSInit();
+
+OSInit()初始化μC/OS-Ⅱ，对这个函数的调用必须在调用OSStart（）函数之前，而OSStart（）函数真正开始运行多任务。
+
+
+1.建立任务：创建一个启动任务（也就是主任务）。启动任务会创建所有的应用程序任务
+OSTaskCreat()/OSTaskCreatExt()
+
+INT8U  OSTaskCreateExt (void   (*task)(void *p_arg),
+                        void    *p_arg,
+                        OS_STK  *ptos,
+                        INT8U    prio,
+                        INT16U   id,
+                        OS_STK  *pbos,
+                        INT32U   stk_size,
+                        void    *pext,
+                        INT16U   opt)
+参数分析：
+void   (*task)(void *p_arg)  /* 函数指针，void *pd为函数的参数*/
+void    *p_arg,				 /* 建立任务时，传递的参数 */
+OS_STK  *ptos,				 /* 指向堆栈任务栈顶的指针 */ 
+INT8U    prio,				 /* 任务的优先级，必须唯一，数字越低优先级越高 */
+INT16U   id,				/* 任务ID，一般和任务优先级相同 */
+OS_STK  *pbos,				/* 指向任务栈栈底的指针。OS_STK_GROWTH 决定堆栈增长方向 */
+INT32U   stk_size,			/* 任务栈大小 */
+void    *pext,				/* 一块用户内存区的指针，用于任务控制块TCB的扩展功能（如任务切换时保存CPU浮点寄存器的数据）。一般不用，填0即可 */
+INT16U   opt				/* 任务选项字 */
+
+2. 启动多任务系统，控制权交给uC/OS-II
+OSStart()
+
+注意/警告:
+在调用 OSStart( )之前必须先调用 OSInit ( )。
+在用户程序中 OSStart( )只能被调用一次。第二次
+调用 OSStart( )将不进行任何操作
+
+
+uC/OS-II中的消息邮箱
+
+#define OS_MBOX_EN                1u  确保邮箱可以使用
+
+/* 第一步:定义一个邮箱， 这只是一个邮箱指针， OSMboxCreate函数会创建邮箱必需的资源 */
+static OS_EVENT *AppUserIFMbox;
+
+/*第二步：在主程序中建立邮箱(MBOX)：并初始化为空*/
+/* OSMboxCreate()建立并初始化一个消息邮箱。消息邮箱允许任务或中断向其他一个或几个任务发送消息 */
+AppUserIFMbox = OSMboxCreate((void*)0);
+
+
+
+
+MBOX->Send:
+OSMboxPost()函数通过消息邮箱向任务发送消息
+
+/* 将按键代码发送到邮箱 */
+uint8_t ucKeyCode;	/* 按键代码 */
+OSMboxPost(AppUserIFMbox,&ucKeyCode)
+
+
+MBOX->Receive:
+INT8U   msg;
+/*等待邮箱中的消息 */
+msg = *(INT8U *)(OSMboxPend(AppUserIFMbox, OS_TICKS_PER_SEC , &err));
+
+
+
+关于UCOS信号量
+
+https://blog.csdn.net/bytxl/article/details/50276577?utm_source=blogxgwz2
+/*第一步：定义一个信号量，这只是一个信号量指针*/
+static OS_EVENT *Semp;
+
+
+/* 第二步：创建一个信号量 这个信号量会造成优先级的反转要小心使用 */
+/* 信号量实现：互斥功能 */
+Semp      =	OSSemCreate(1);	  
+
+
+
+OSSemPend() 等待一个信号量                  （注：只能由任务操作）
+
+本函数应用于任务试图获得共享资源的使用权、任务需要与其他任务或中断同步及任务需要等待特定事件发生的场合。
+
+如果任务Task_A调用OSSemPend()，且信号量的值有效(非0)，那么OSSemPend()递减信号量计数器（.OSEventCnt），并返回该值。
+换句话说，Task_A获取到共享资源的使用权了，之后就执行该资源。
+
+如果如果任务Task_A调用OSSemPend()，信号量无效(为0)，那么OSSemPend()调用OS_EventTaskWait()函数，把Task_A放入等待列表中。
+（等待到什么时候呢？要看OSSemPost()(或者等待超时情况)，由它释放信号量并检查任务执行权，见下资料）
+
+OSSemPend(Semp, 0, &err);
+
+
+OSSemPost() 发出（释放）一个信号量          （注：由任务或中断操作）
+本函数其中调用OS_EventTaskRdy()函数，把优先级最高的任务Task_A（在这假如是Task_A，另外假设当前调用OSSemPost()的任务是Task_B）从等待任务列表中去除，并使它进入就绪态。然后调用OSSched()进行任务调度。如果Task_A是当前就绪态中优先级最高的任务，则内核执行Task_A；否则，OSSched()直接返回，Task_B继续执行。
+OSSemPost(Semp);
+
+
+example:
+static void AppTaskUserIF(void *p_arg)//优先级2
+{
+	(void)p_arg;
+	....
+	OSSemPend(Semp, 0, &err);
+	...
+	OSSemPost(Semp);
+}
+
+static void AppTaskCom(void *p_arg)//优先级3
+{
+	(void)p_arg;
+	...
+	OSSemPend(Semp, 0, &err);
+	...
+	OSSemPost(Semp);
+}
+
+static void AppTaskLED(void *p_arg))//优先级4
+{
+	(void)p_arg;
+	...
+	OSSemPend(Semp, 0, &err);
+	...
+	OSSemPost(Semp);
+}
+
+
+/* 信号量实现：实现同步功能 */
+/*创建一个信号量*/
+static OS_EVENT *Semp;
+
+Semp = OSSemCreate(0);	
+
+KeyScan任务       ：主要是实现按键扫描,释放信号
+void AppTaskUserIF(void* p_arg)//优先级2
+{
+	(void)p_arg;
+	OSSemPost(Semp);//释放信号
+}
+
+COM任务           ：等待信号量。
+AppTaskCom(void *p_arg)
+{		
+	(void)p_arg;	
+	OSSemPend(Semp, 0, &err);//等待信号
+	 						  	 	       											  
+}
+
+互斥信号量使用：
+/*第一步：创建一个信号量*/
+static OS_EVENT *Semp;
+
+/*第二步：创建一个互斥型信号量 */
+Semp =	OSMutexCreate(0, &err);	   
+
+void AppTaskUserIF(void *p_arg)//等级2
+{
+	OSMutexPend(Semp, 0, &err);//等待信号量
+	....
+	OSMutexPost(Semp);//释放信号
+}
+
+void AppTaskCom(void *p_arg)//等级3
+{
+	OSMutexPend(Semp, 0, &err);
+	....
+	OSMutexPost(Semp);			
+}
+
+//flag表示当前mutex是否能够获得（0或1）
+//priority表示使用这个mutex的任务，以防一个高优先级的任务需要访问mutex
+
+uCOS-II中消息队列的使用。
+
+/* 第一步：创建消息队列 */
+static OS_EVENT *CommQ; 
+static void  *CommMsg[10]; 
+
+https://www.cnblogs.com/yuweifeng/p/5530623.html
+/* 第二步：创建一个消息队列 */
+CommQ  = OSQCreate(&CommMsg[0], 10);
+
+
+void AppTaskUserIF(void *p_arg)//等级2
+{
+	err = OSQPost(CommQ, (void *)&CommRxBuf[0]); //该函数用于向消息队列发送消息
+}
+
+void AppTaskCom(void *p_arg)//等级3
+{
+	INT8U *pmsg;
+	
+	pmsg = OSQPend(CommQ, 100, &err); 	//用于任务等待消息
+}
+
+uCOS-II中事件标志组的使用:
+/* 第一步：创建事件标志组 */
+OS_FLAG_GRP *FlagStat; 
+
+/* 第二步:创建事件标志组 */
+FlagStat = OSFlagCreate(0x00, &err);//定义事件标志组的初始值
+
+void AppTaskUserIF(void *p_arg)//等级2
+{
+	//向事件标志组发布标志
+	OSFlagPost(FlagStat, 0x11, OS_FLAG_SET, &err);
+}
+
+AppTaskStart(void *p_arg)//等级0
+{
+	//等待事件标志组
+	OSFlagPend(FlagStat,0x11,OS_FLAG_WAIT_SET_ANY + OS_FLAG_CONSUME,0,
+		           &err); 
+}
+uCOS-II-内存管理
+/*第一步: 创建一个内存块*/
+static OS_MEM   *CommMem;
+/*创建一个内存分区 10个内存块 每个内存块10个字节*/ 
+static INT8U  CommBuf[10][10]; 
+
+/* 第二步：创建一个动态的内存块 注意第二个10 表示的是10个字节，如果是32位的话那就要乘以4 */
+CommMem = OSMemCreate(&CommBuf[0][0], 10, 10, &err);
+
+//实现内存块的申请和释放。
+void AppTaskUserIF(void *p_arg)//等级2
+{
+	INT8U *pmsg;
+	INT8U   err；
+	
+	/* 申请一个内存块 */
+	pmsg = OSMemGet(CommMem, &err);  
+	
+	/* 释放一个内存块 第一个是内存分区的指针 第二个内存块的指针 */
+	err = OSMemPut(CommMem, (void *)pmsg); 
+}
+
+1；建立一个内存分区，OSMemCreate()
+2：分配一个内存块，OSMemGet()
+应用程序通过调用该函数，从已经建立的内存分区中申请一个内存块。该函数唯一的参数是指向特定内存分区的指针。
+3：释放一个内存块，OSMemPut()
+当应用程序不再使用一个内存块时，必须及时的把它释放，并放回到相应的内存分区中，这个操作就是通过调用该函数实现的。
+4：查询一个内存分区的状态，OSQMemQuery()。
+
+
+
+uCOS-II-定时器任务
+/*第一步: 创建一个定时器*/
+static OS_TMR  *LEDTmr;
+
+/* 创建一个定时器任务1 默认定时器任务是100ms执行一次*/
+LEDTmr = OSTmrCreate( 1, //起始延迟时间，单位100ms
+					  1, //周期，单位100ms
+					  OS_TMR_OPT_PERIODIC, 
+					  LED3Callback,//回调函数
+					  (void *)0,   //回调函数的参数
+					  "ledtmr",    //定时器的名称
+					  &err);
+/* 启动定时器 */
+if (err == OS_ERR_NONE) 
+{
+	OSTmrStart(LEDTmr, &err);
+}
+
+//LED3回调函数
+void  LED3Callback(void *ptmr, void *callback_arg)
+{
+	bsp_LedToggle(3);	
+}
+
+uCOS-II-实现任务等待多个事件的发生（支持信号量，邮箱和消息队列）
+
+//第一步：
+/* 定义一个邮箱， 这只是一个邮箱指针， OSMboxCreate函数会创建邮箱必需的资源 */
+static OS_EVENT *AppUserIFMbox;
+
+/*创建一个信号量*/
+static OS_EVENT *Semp;
+
+//第二步：
+/* 创建邮箱(MBOX) */
+AppUserIFMbox = OSMboxCreate((void *)0);
+
+Semp      =	OSSemCreate(0);	  /* 创建一个信号量 实现同步功能 */
+
+
+void AppTaskUserIF(void *p_arg)//等级2
+{
+	INT8U   *msg;
+	OS_EVENT *events[3];
+	OS_EVENT *events_rdy[3];
+	void *event_msgs[3];
+	INT8U    err;
+	...
+	
+	/* 邮箱和信号量 */
+		events[0] = (OS_EVENT *)AppUserIFMbox;//邮箱
+		events[1] = (OS_EVENT *)Semp;         //信号量
+		events[2] = (OS_EVENT *)0;
+
+	/* 等待邮箱和信号量 */
+	OSEventPendMulti(&events[0],
+					&events_rdy[0],
+					&event_msgs[0],
+					OS_TICKS_PER_SEC,
+					&err);
+}
+
+
+
+uCOS-II-低功耗模式中的休眠模式
+
+2. 关于低功耗的说明：
+(1) uCOS源码中没有低功耗相关函数，所以需要用户自己去实现。FreeRTOS中低功耗
+	的实现都是采用的tickless模式，简单的说就是进入空闲任务后获取可以关闭滴答
+	定时器的时间长度，关闭了滴答定时器意味着关闭了任务调度，然后调用__WFI指令
+	进入休眠模式，关闭滴答定时器的时间到后休眠模式会被唤醒，继续执行多任务。
+(2) STM32F10xxx有三种低功耗模式
+	a. 睡眠模式(Cortex-M3内核停止，所有外设包括Cortex-M3核心的外设，如NVIC、系统时
+	钟(SysTick)等仍在运行)
+	b. 停止模式(所有的时钟都已停止)
+	c. 待机模式(1.8V电源关闭)
+(3) 通过指令__WFI进入休眠模式，可以通过任意中断唤醒。
+(4) 降低系统主频或者关闭外设时钟也可有效降低系统功耗。
+3. (1)本例程的低功耗实现方法是在空闲任务的钩子函数中调用__WFI指令来进入低功耗模式。
+	调用__WFI指令前关闭串口时钟，LED引脚时钟，串口引脚时钟。被唤醒后重新开启。
+	相关函数都在app_hooks.c文件中。
+	(2)IO引脚的状态未做处理，实际项目中要做处理
+	(3)本工程使用了滴答定时器中断和PendSV中断，由于空闲任务没有执行调度相关函数。
+	只有滴答定时器能够唤醒休眠。
+	针对这种情况，专门测试了一下休眠模式的执行时间，以及休眠时间占总运行时间的百分比。
+	系统比较闲的情况下，基本都是出于休眠状态。
+	a. 休眠总时间:31402ms, 系统总时间:32465ms 休眠时间百分比:96%
+	b. 休眠总时间:103286ms, 系统总时间:106847ms 休眠时间百分比:96%
+	c. 休眠总时间:2419529ms, 系统总时间:2504275ms 休眠时间百分比:96%
+设计低功耗主要从以下几方面着手：
+	1. 用户需要根据最低电源消耗、最快速启动时间和可用的唤醒源等条件，选定一个最佳的低功耗模式。
+	可以使用的低功耗方式有休眠模式，待机模式，停机模式。
+	2. 选择了低功耗方式后就是关闭可以关闭的外设时钟。
+	3. 降低系统主频。
+	4. 注意I/O的状态。
+	如果此IO口带上拉，请设置为高电平输出或者高阻态输入；
+	如果此IO口带下拉，请设置为低电平输出或者高阻态输入；
+	a. 在睡眠模式下，所有的I/O引脚都保持它们在运行模式时的状态。
+	b. 在停止模式下，所有的I/O引脚都保持它们在运行模式时的状态。
+	c. 在待机模式下，所有的I/O引脚处于高阻态，除了以下的引脚：
+	● 复位引脚(始终有效)
+	● 当被设置为防侵入或校准输出时的TAMPER引脚
+	● 被使能的唤醒引脚
+5. 注意IO和外设IC的连接。
+6. 测低功耗的时候，一定不要连接调试器，更不能边调试边测电流。
+uint32_t g_uiStart, g_uiEnd;
+__IO uint32_t g_uiCnt = 0;
+__IO uint64_t g_ullCntTotal = 0;
+
+
+void  App_TaskIdleHook (void)
+{
+	OS_CPU_SR  cpu_sr;
+	
+	/* 关闭时钟，建议加上调度锁，这里未做处理 */
+	RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOF, DISABLE);
+	RCC_APB2PeriphClockCmd(RCC_APB2Periph_USART1, DISABLE);
+	RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_AFIO, DISABLE);
+	
+	/* 记录进入休眠状态前时间，下面的功能用于调试，不要用于项目 */
+	OS_ENTER_CRITICAL();                     
+    g_uiStart = CPU_TS_TmrRd();
+    OS_EXIT_CRITICAL();
+
+	/* 进入休眠状态 */
+	__WFI();
+}
+
+
+void  App_TimeTickHook (void)
+{
+#if (APP_CFG_PROBE_OS_PLUGIN_EN == DEF_ENABLED) && (OS_PROBE_HOOKS_EN > 0)
+    OSProbe_TickHook();
+#endif
+	
+	/* 如果之前运行的是空闲任务 */
+	if(OSPrioCur == OS_TASK_IDLE_PRIO)
+	{
+		g_uiEnd = CPU_TS_TmrRd();
+		
+		/* 累计休眠的时间，单位时钟周期个数 */
+		g_ullCntTotal += (g_uiEnd - g_uiStart);
+		
+		/* 记录当前系统时间，单位1ms */
+		g_uiCnt = OSTimeGet();
+		
+		/* 重新开启时钟 */
+		RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOF, ENABLE);
+		RCC_APB2PeriphClockCmd(RCC_APB2Periph_USART1, ENABLE);
+		RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOA | RCC_APB2Periph_AFIO, ENABLE);
+	}
+   
+}
+
+低功耗模式中的待机模式
+关于低功耗的说明：
+*                   (1) 待机模式可实现系统的最低功耗。该模式是在Cortex-M3深睡眠模式时关闭电压调节器。整个
+*                       1.8V供电区域被断电。PLL、HSI和HSE振荡器也被断电。SRAM和寄存器内容丢失。只有备份
+*                       的寄存器和待机电路维持供电。
+*                   (2) 从待机模式唤醒后的代码执行等同于复位后的执行。
+*                3. K2按键将系统从待机模式唤醒，如果系统没有进入待机模式，当K2按键按下时，串口打印消息。
+*                   K3按键用于让系统进入待机模式。
+*              设计低功耗主要从以下几方面着手：
+*                1. 用户需要根据最低电源消耗、最快速启动时间和可用的唤醒源等条件，选定一个最佳的低功耗模式。
+*                   可以使用的低功耗方式有休眠模式，待机模式，停机模式。
+*                2. 选择了低功耗方式后就是关闭可以关闭的外设时钟。
+*                3. 降低系统主频。
+*                4. 注意I/O的状态。
+*                   如果此IO口带上拉，请设置为高电平输出或者高阻态输入；
+*                   如果此IO口带下拉，请设置为低电平输出或者高阻态输入；
+*                   a. 在睡眠模式下，所有的I/O引脚都保持它们在运行模式时的状态。
+*                   b. 在停止模式下，所有的I/O引脚都保持它们在运行模式时的状态。
+*                   c. 在待机模式下，所有的I/O引脚处于高阻态，除了以下的引脚：
+*                      ● 复位引脚(始终有效)
+*                      ● 当被设置为防侵入或校准输出时的TAMPER引脚
+*                      ● 被使能的唤醒引脚
+*                5. 注意IO和外设IC的连接。
+*                6. 测低功耗的时候，一定不要连接调试器，更不能边调试边测电流。
+/* 按键K2按下，打印K2按下消息，K2按键还有一个功能就是将系统从待机模式唤醒 */
+else if (msg == KEY_DOWN_K2)
+{
+	printf("K2按键按下\r\n");
+}
+
+/* 按键K3按下，进入到待机模式 */
+if (msg == KEY_DOWN_K3)		
+{ 
+	PWR_EnterSTANDBYMode();
+}	
+
+uCOS-II低功耗模式中的停机模式
+
+关于低功耗的停机模式说明：
+(1) 停止模式是在Cortex-M3的深睡眠模式基础上结合了外设的时钟控制机制，在停止模式下电压
+   调节器可运行在正常或低功耗模式。此时在1.8V供电区域的的所有时钟都被停止，PLL、HSI和
+   HSE的RC振荡器的功能被禁止，SRAM和寄存器内容被保留下来。
+(2) 在停止模式下，所有的I/O引脚都保持它们在运行模式时的状态。
+(3) 一定要关闭滴答定时器，实际测试发现滴答定时器中断也能唤醒停机模式。
+(4) 当一个中断或唤醒事件导致退出停止模式时， HSI RC振荡器被选为系统时钟。
+(5) 退出低功耗的停机模式后，需要重新配置使用HSE 。
+3.  K1按键按下打印任务的执行情况。
+	K2按键按下将系统从停机模式模式恢复。
+	K3按键按下让系统进入停机模式。
+设计低功耗主要从以下几方面着手：
+1. 用户需要根据最低电源消耗、最快速启动时间和可用的唤醒源等条件，选定一个最佳的低功耗模式。
+可以使用的低功耗方式有休眠模式，待机模式，停机模式。
+2. 选择了低功耗方式后就是关闭可以关闭的外设时钟。
+3. 降低系统主频。
+4. 注意I/O的状态。
+如果此IO口带上拉，请设置为高电平输出或者高阻态输入；
+如果此IO口带下拉，请设置为低电平输出或者高阻态输入；
+a. 在睡眠模式下，所有的I/O引脚都保持它们在运行模式时的状态。
+b. 在停止模式下，所有的I/O引脚都保持它们在运行模式时的状态。
+c. 在待机模式下，所有的I/O引脚处于高阻态，除了以下的引脚：
+   ● 复位引脚(始终有效)
+   ● 当被设置为防侵入或校准输出时的TAMPER引脚
+   ● 被使能的唤醒引脚
+5. 注意IO和外设IC的连接。
+6. 测低功耗的时候，一定不要连接调试器，更不能边调试边测电流。
+
+(msg == KEY_DOWN_K3)		
+{ 
+	/*
+	   1. 停止模式是在Cortex-M3的深睡眠模式基础上结合了外设的时钟控制机制，在停止模式下电压
+		  调节器可运行在正常或低功耗模式。此时在1.8V供电区域的的所有时钟都被停止， PLL、 HSI和
+		  HSE的RC振荡器的功能被禁止， SRAM和寄存器内容被保留下来。
+	   2. 在停止模式下，所有的I/O引脚都保持它们在运行模式时的状态。
+	   3. 一定要关闭滴答定时器，实际测试发现滴答定时器中断也能唤醒停机模式。
+	*/
+	SysTick->CTRL &= ~SysTick_CTRL_ENABLE_Msk;  /* 关闭滴答定时器 */  
+	PWR_EnterSTOPMode(PWR_Regulator_LowPower, PWR_STOPEntry_WFI);				
+	OS_ENTER_CRITICAL();
+	
+	/* 
+	  1、当一个中断或唤醒事件导致退出停止模式时， HSI RC振荡器被选为系统时钟。
+	  2、退出低功耗的停机模式后，需要重新配置使用HSE 
+	*/
+	SystemInit();
+	SysTick->CTRL |= SysTick_CTRL_ENABLE_Msk; /* 使能滴答定时器 */  
+	OS_EXIT_CRITICAL();
+}
+
+
+uCOS-II主要实现信号量中断方式(定时器中断)
+
+
+/*创建一个信号量*/
+static OS_EVENT *Semp;
+
+/* 创建一个信号量 实现同步功能 */
+Semp = OSSemCreate(0);	 
+
+ AppTaskUserIF(void *p_arg)
+/* 按键K2按下，50ms后通过定时器中断程序给任务AppTaskLED发送邮箱数据 */
+static void AppTaskUserIF(void *p_arg)
+{
+	else if (msg == KEY_DOWN_K2)
+	{
+		bsp_StartHardTimer(1 ,50000, (void *)TIM_CallBack1);
+	}	
+}
+
+
+static void TIM_CallBack1(void)
+{
+	OSSemPost(Semp);
+}
+
+static void AppTaskLED(void *p_arg)
+{
+	...
+	OSSemPend(Semp, 0, &err);
+}
+
+
+uCOS-II实现消息队列中断方式
+
+/* 创建消息队列 */
+static OS_EVENT *CommQ; 
+static void  *CommMsg[10]; 
+
+
+
+/* 创建一个消息队列 */
+CommQ  = OSQCreate(&CommMsg[0], 10); 
+
+static void AppTaskUserIF(void *p_arg)//等级2
+{
+	/* 按键K2按下，50ms后通过定时器中断程序给任务AppTaskLED发送邮箱数据 */
+	else if (msg == KEY_DOWN_K2)
+	{
+		bsp_StartHardTimer(1 ,50000, (void *)TIM_CallBack1);
+	}
+
+}
+*/
+/* 特别注意，uCOS-II消息队列传递的是地址。
+   所以不要将变量定义放在中断程序中，退出中断后变量空间会释放给系统堆栈。
+*/
+uint8_t s_ucCount1 = 0;
+uint16_t s_ucCount2 = 0;
+uint32_t s_ucCount3 = 0;
+static void TIM_CallBack1(void)
+{
+	s_ucCount1 += 1;
+	s_ucCount2 += 2;
+	s_ucCount3 += 3;
+	/* 连续向消息队列中发送3次数据 */
+	OSQPost(CommQ, (void *)&s_ucCount1); 
+	OSQPost(CommQ, (void *)&s_ucCount2); 
+	OSQPost(CommQ, (void *)&s_ucCount3);
+}
+
+static void AppTaskLED(void *p_arg)
+{
+	pmsg = OSQPend(CommQ, 0, &err); 
+}
+uCOS-II 实现事件标志组中断方式
+按键K2和K3按键用于启动在定时器中断中发送事件标志，
+启动任务StartTask只有两个事件标志都收到了才会执行串口打印任务。
+
+/* 创建事件标志组 */
+static OS_FLAG_GRP *FlagStat; 
+/* 创建事件标志组 */
+FlagStat = OSFlagCreate(0x00, &err); 
+
+static void AppTaskUserIF(void *p_arg)
+{
+	/* 按键K2按下，50ms后通过定时器中断程序发送事件标志 */
+	else if (msg == KEY_DOWN_K2)
+	{
+		bsp_StartHardTimer(1 ,50000, (void *)TIM_CallBack1);
+	}
+	/* 按键K3按下，50ms后通过定时器中断程序发送事件标志 */
+	else if (msg == KEY_DOWN_K3)
+	{
+		bsp_StartHardTimer(2 ,50000, (void *)TIM_CallBack2);
+	}
+}
+static void TIM_CallBack1(void)
+{
+	INT8U   err;
+	
+	OSFlagPost(FlagStat, 0x01, OS_FLAG_SET, &err);
+}
+
+static void TIM_CallBack2(void)
+{
+	INT8U   err;
+	
+	OSFlagPost(FlagStat, 0x02, OS_FLAG_SET, &err);
+}
+
+/* 任务主体，必须是一个死循环 */
+while (1)     
+{ 
+	OSFlagPend(FlagStat, 
+			   0x03,  
+			   OS_FLAG_WAIT_SET_ALL + OS_FLAG_CONSUME,
+			   0,
+			   &err); 
+	if (err == OS_ERR_NONE)                            
+	{
+		printf("接收到事件标志\r\n");	
+	}
+}      
+
+uCOS-II 消息邮箱中断方式
+/* 定义一个邮箱， 这只是一个邮箱指针， OSMboxCreate函数会创建邮箱必需的资源 */
+static OS_EVENT *AppUserIFMbox;
+static OS_EVENT *AppIntMbox;
+
+/* 创建邮箱(MBOX) */
+AppUserIFMbox = OSMboxCreate((void *)0);
+AppIntMbox = OSMboxCreate((void *)0);
+
+static void AppTaskUserIF(void *p_arg)
+{
+	/* 按键K2按下，50ms后通过定时器中断程序给任务AppTaskLED发送邮箱数据 */
+	else if (msg == KEY_DOWN_K2)
+	{
+		bsp_StartHardTimer(1 ,50000, (void *)TIM_CallBack1);
+	}
+}
+
+/* 特别注意，uCOS-II消息邮箱传递的是地址。
+   所以不要将变量定义放在中断程序中，退出中断后变量空间会释放给系统堆栈。
+*/
+uint8_t s_ucCount = 0; 
+static void TIM_CallBack1(void)
+{
+	/* 将数值发送到邮箱 */
+	s_ucCount++;
+	OSMboxPost(AppIntMbox, &s_ucCount);
+}
+
+//接收定时器中断服务程序发来的邮箱数据	  	
+static void AppTaskLED(void *p_arg)
+{
+	INT8U   msg;
+	INT8U   err;
+	
+    (void)p_arg;		/* 避免编译器告警 */
+		
+	while (1) 
+	{
+		msg = *(INT8U *)(OSMboxPend(AppIntMbox, 0, &err));
+		if (err == OS_ERR_NONE)        /* 无错表示成功接收到一个消息 */
+		{	
+			printf("msg = %d\r\n", msg);
+		}
+	}
+}
